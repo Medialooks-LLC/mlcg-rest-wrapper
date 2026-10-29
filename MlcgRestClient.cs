@@ -1,6 +1,4 @@
 using System.Net.Http;
-using System.Net.Http.Json;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using MLCG.RestControl.Models;
 
@@ -17,10 +15,13 @@ public sealed partial class MlcgRestClient : IDisposable
     private Uri _baseUri = new("http://127.0.0.1:3101/");
 
     public MlcgRestClient(string baseUrl)
-        : this(baseUrl, new HttpClient(), ownsHttpClient: true)
+        : this(baseUrl, new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), ownsHttpClient: true)
     {
     }
 
+    /// <summary>Uses a caller-owned transport without changing its headers or disposing it.</summary>
+    /// <param name="baseUrl">Absolute HTTP(S) REST service base.</param>
+    /// <param name="httpClient">Configure its handler with AllowAutoRedirect=false before constructing the HttpClient. A wrapper cannot change an injected handler's redirect or cookie policy.</param>
     public MlcgRestClient(string baseUrl, HttpClient httpClient)
         : this(baseUrl, httpClient, ownsHttpClient: false)
     {
@@ -28,7 +29,7 @@ public sealed partial class MlcgRestClient : IDisposable
 
     private MlcgRestClient(string baseUrl, HttpClient httpClient, bool ownsHttpClient)
     {
-        _httpClient = httpClient;
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _ownsHttpClient = ownsHttpClient;
         BaseUrl = baseUrl;
     }
@@ -94,20 +95,14 @@ public sealed partial class MlcgRestClient : IDisposable
         IReadOnlyDictionary<string, string> values,
         CancellationToken cancellationToken = default)
     {
-        ApplyAuthHeader();
-        var response = await _httpClient.PatchAsJsonAsync(
-            BuildUri($"/api/sessions/{Uri.EscapeDataString(sessionId)}/bindings"),
+        var payload = await SendJsonAsync<BindingsEnvelope>(_httpClient, CreateRequest(
+            new HttpMethod("PATCH"), $"/api/sessions/{Uri.EscapeDataString(sessionId)}/bindings", ApiToken?.Trim(),
             new Dictionary<string, IReadOnlyDictionary<string, string>>
             {
                 ["values"] = values,
             },
-            _jsonOptions,
-            cancellationToken);
-
-        await EnsureSuccessAsync(response, cancellationToken);
-
-        var payload = await response.Content.ReadFromJsonAsync<BindingsEnvelope>(_jsonOptions, cancellationToken);
-        return payload?.Bindings ?? [];
+            _jsonOptions), _jsonOptions, cancellationToken).ConfigureAwait(false);
+        return payload.Bindings;
     }
 
     public async Task<IReadOnlyList<MlcgBinding>> ReplaceBindingsAsync(
@@ -115,20 +110,14 @@ public sealed partial class MlcgRestClient : IDisposable
         IEnumerable<MlcgBinding> bindings,
         CancellationToken cancellationToken = default)
     {
-        ApplyAuthHeader();
-        var response = await _httpClient.PutAsJsonAsync(
-            BuildUri($"/api/sessions/{Uri.EscapeDataString(sessionId)}/bindings"),
+        var payload = await SendJsonAsync<BindingsEnvelope>(_httpClient, CreateRequest(
+            HttpMethod.Put, $"/api/sessions/{Uri.EscapeDataString(sessionId)}/bindings", ApiToken?.Trim(),
             new Dictionary<string, IEnumerable<MlcgBinding>>
             {
                 ["bindings"] = bindings,
             },
-            _jsonOptions,
-            cancellationToken);
-
-        await EnsureSuccessAsync(response, cancellationToken);
-
-        var payload = await response.Content.ReadFromJsonAsync<BindingsEnvelope>(_jsonOptions, cancellationToken);
-        return payload?.Bindings ?? [];
+            _jsonOptions), _jsonOptions, cancellationToken).ConfigureAwait(false);
+        return payload.Bindings;
     }
 
     public async Task SendTimelineCommandAsync(
@@ -159,14 +148,9 @@ public sealed partial class MlcgRestClient : IDisposable
             payload["loopCount"] = loopCount.Value;
         }
 
-        ApplyAuthHeader();
-        var response = await _httpClient.PostAsJsonAsync(
-            BuildUri($"/api/sessions/{Uri.EscapeDataString(sessionId)}/timeline"),
-            payload,
-            _jsonOptions,
-            cancellationToken);
-
-        await EnsureSuccessAsync(response, cancellationToken);
+        await SendNoContentAsync(_httpClient, CreateRequest(HttpMethod.Post,
+            $"/api/sessions/{Uri.EscapeDataString(sessionId)}/timeline", ApiToken?.Trim(), payload, _jsonOptions),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public string BuildOutputUrl(
@@ -183,7 +167,11 @@ public sealed partial class MlcgRestClient : IDisposable
 
         var trimmedOutputBaseUrl = outputBaseUrl.Trim().TrimEnd('/');
 
-        if (!Uri.TryCreate(trimmedOutputBaseUrl, UriKind.Absolute, out _))
+        if (!Uri.TryCreate(trimmedOutputBaseUrl, UriKind.Absolute, out var outputUri) ||
+            (outputUri.Scheme != "http" && outputUri.Scheme != "https") ||
+            outputUri.UserInfo.Length != 0 || outputUri.Query.Length != 0 || outputUri.Fragment.Length != 0 ||
+            (_baseUri.Scheme != "http" && _baseUri.Scheme != "https") ||
+            _baseUri.UserInfo.Length != 0 || _baseUri.Query.Length != 0 || _baseUri.Fragment.Length != 0)
         {
             return string.Empty;
         }
@@ -205,62 +193,15 @@ public sealed partial class MlcgRestClient : IDisposable
         }
     }
 
-    private async Task<T> GetAsync<T>(string path, CancellationToken cancellationToken)
-    {
-        ApplyAuthHeader();
-        using var response = await _httpClient.GetAsync(BuildUri(path), cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-
-        var payload = await response.Content.ReadFromJsonAsync<T>(_jsonOptions, cancellationToken);
-        return payload ?? throw new InvalidOperationException($"No JSON payload returned for {path}.");
-    }
+    private Task<T> GetAsync<T>(string path, CancellationToken cancellationToken)
+        => SendJsonAsync<T>(_httpClient, CreateRequest(HttpMethod.Get, path, ApiToken?.Trim(), null, _jsonOptions), _jsonOptions, cancellationToken);
 
     private Uri BuildUri(string path)
     {
-        return new Uri(_baseUri, path.TrimStart('/'));
-    }
-
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
-    {
-        if (response.IsSuccessStatusCode)
-        {
-            return;
-        }
-
-        var body = response.Content == null
-            ? string.Empty
-            : await response.Content.ReadAsStringAsync();
-        var requestUri = response.RequestMessage?.RequestUri?.ToString() ?? "REST request";
-        var message = $"{(int)response.StatusCode} {response.ReasonPhrase}: {requestUri}";
-
-        if (!string.IsNullOrWhiteSpace(body))
-        {
-            message += $" | {body}";
-        }
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound &&
-            requestUri.IndexOf("/api/sessions/", StringComparison.OrdinalIgnoreCase) >= 0 &&
-            requestUri.IndexOf("/timeline", StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            message += " | Timeline control requires an MLCG REST server build with POST /api/sessions/{id}/timeline and a valid selected session id.";
-        }
-
-        throw new HttpRequestException(message);
-    }
-
-    private void ApplyAuthHeader()
-    {
-        _httpClient.DefaultRequestHeaders.Authorization = null;
-        _httpClient.DefaultRequestHeaders.Remove("x-mlcg-token");
-
-        if (string.IsNullOrWhiteSpace(ApiToken))
-        {
-            return;
-        }
-
-        var token = ApiToken.Trim();
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        _httpClient.DefaultRequestHeaders.Add("x-mlcg-token", token);
+        var service = _baseUri;
+        if ((service.Scheme != "http" && service.Scheme != "https") || service.UserInfo.Length != 0 || service.Query.Length != 0 || service.Fragment.Length != 0)
+            throw new InvalidOperationException("REST connections require an HTTP(S) service URL without credentials, query or fragment.");
+        return new Uri(service, path.TrimStart('/'));
     }
 
     private static Uri CreateBaseUri(string baseUrl)

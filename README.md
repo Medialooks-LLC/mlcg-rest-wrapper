@@ -32,7 +32,7 @@ using var client = new MlcgRestClient("http://127.0.0.1:3101");
 
 ## Commands
 
-The `codex/show-timeline-playout` development branch adds typed Show/Timeline/Clip/Run/Schedule methods, live clip-data updates, atomic live-plan edits, JSON import/export and run WebSocket subscriptions. The updated source also includes permanent Output Channel methods. Build a wrapper containing this source to use them; the public 1.0.0 package does not contain them yet. See [the scheduling guide](../../docs/playout-scheduling.md) for the contract and examples. Existing session methods remain compatible.
+The public **1.0.1** package includes typed Show/Timeline/Clip/Run/Schedule methods, live clip-data updates, atomic live-plan edits, JSON import/export, run WebSocket subscriptions and permanent Output Channel methods. See [the scheduling guide](../../docs/playout-scheduling.md) for the contract and examples. Existing session methods remain compatible. The temporary Demo Workspace methods described below are new development source and are **not included in public 1.0.1**.
 
 | Method | REST call | Purpose |
 | --- | --- | --- |
@@ -45,6 +45,12 @@ The `codex/show-timeline-playout` development branch adds typed Show/Timeline/Cl
 | `ReplaceBindingsAsync(sessionId, bindings)` | `PUT /api/sessions/:id/bindings` | Replaces the full binding list. |
 | `SendTimelineCommandAsync(sessionId, command, ...)` | `POST /api/sessions/:id/timeline` | Controls output play, pause, stop, restart, seek, or loop mode. |
 | `BuildOutputUrl(outputBaseUrl, sessionId)` | n/a | Builds a live output URL for a session. |
+
+The updated source adds `PlayAnimationAsync`, `PauseAnimationAsync`,
+`RestartAnimationAsync`, `SeekAnimationAsync`, `SetAnimationLoopAsync`,
+`DeleteSessionAsync` and `BuildOverlayUrl`. These additions, Demo Workspace and
+animation metadata are **not in public NuGet 1.0.1**. Installing 1.0.1 does not
+enable them; use an updated build until a matching package is published.
 
 ## Read Sessions
 
@@ -104,6 +110,39 @@ var updatedBindings = await client.UpdateBindingsAsync(
 The REST server broadcasts binding updates to subscribed live output pages.
 
 ## Control Timeline Playback
+
+The updated **source** also has `GetSessionAnimationInfoAsync(sessionId)` for
+the exact finite scene range and intrinsic loop region. This read-only method
+is not in NuGet 1.0.1; it reads the existing session snapshot and does not alter
+templates or playback. Its typed result describes timing, not the current
+painted frame. The SDK sample's animation slider uses this range with the
+existing `pause`/`play`/`set-loop` commands, independently of video position.
+
+For new integrations using the updated client, prefer the named helpers:
+
+```csharp
+var outputUrl = client.BuildOverlayUrl("https://cg.medialooks.com", sessionId);
+// Pass outputUrl to the Video SDK HTML5 Overlay plugin; no control token is in it.
+await client.UpdateBindingAsync(sessionId, "headline", "Updated from C#");
+await client.RestartAnimationAsync(sessionId, loop: false);
+await client.PauseAnimationAsync(sessionId);
+await client.SeekAnimationAsync(sessionId, positionMs: 1500); // Seek and stay paused.
+await client.PlayAnimationAsync(sessionId);                  // Resume current position.
+await client.SetAnimationLoopAsync(sessionId, enabled: true); // No restart or seek.
+```
+
+`BuildOverlayUrl` validates both HTTP(S) bases and defaults to a transparent
+background, autoplay on and whole-scene Loop off. Its URL is a read-only output
+capability: share it only with intended viewers. `SeekAnimationAsync` sends one
+atomic pause-at-position command and does not change looping. Omitting position
+or loop in the other helpers leaves that setting unchanged. Intrinsic per-layer
+loops and animation definitions are not rewritten. These methods control all
+subscribers of the selected session, not the application's source video.
+
+`DeleteSessionAsync(sessionId)` removes that live session subject to server
+permissions. In Demo it frees a private-instance slot; it does not delete the
+stock design. Its output URLs stop working. The library never evicts sessions
+or retries mutating commands automatically.
 
 ```csharp
 await client.SendTimelineCommandAsync("live-show-main", "restart");
@@ -203,7 +242,58 @@ await client.SubscribeOutputChannelAsync(channel, message =>
 
 `ScheduleShowOnChannelAsync` checks the supplied revision at creation, then intentionally takes that channel when the scheduled Run starts. A later manual reassignment does not cancel the job. Cancel it explicitly with `CancelScheduleAsync`; a deleted/unavailable channel fails the scheduled start. Ordinary `StartShowAsync`/`ScheduleShowAsync` do not route channels. For remote sharing, neither frontend nor broker may point at `localhost` on the recipient's machine.
 
-See the [complete channel REST contract](../../docs/playout-scheduling.md#permanent-output-channels) and [C# integration examples](../../docs/csharp-rest-wrapper.md#permanent-output-channels). These source methods are not a claim about availability in an already-installed public NuGet release.
+See the [complete channel REST contract](../../docs/playout-scheduling.md#permanent-output-channels) and [C# integration examples](../../docs/csharp-rest-wrapper.md#permanent-output-channels). These channel methods are available in public NuGet 1.0.1.
+
+## Temporary Demo Workspace (updated client required)
+
+This opt-in server feature gives each application launch its own temporary, in-memory graphics instances. It does not create an account, save edits to the template library, or expose other launches. The catalog consists of real server templates, read-only; each selected template is instantiated independently. A single instance's output URL can be used by multiple viewers, all receiving the same updates.
+
+**Hosted at `https://cg.medialooks.com`; not shipped in NuGet 1.0.1.** Use a compatible updated package containing these methods (1.0.2 or later), or a project reference to the matching source. A source reference is not required when the updated NuGet package is used. Until a new version is published, use the supplied local preview feed rather than assuming it is available on nuget.org. Self-hosted servers must explicitly enable demo workspaces. Keep an ordinary account connection in a different client instance. No shared account password or permanent demo token is embedded in the application.
+
+```csharp
+using MLCG.RestControl;
+
+using var demo = new MlcgRestClient("https://cg.medialooks.com");
+var workspace = await demo.StartDemoWorkspaceAsync(
+    Guid.NewGuid().ToString("D"), "mplatform-rest-overlay", "1.0.0");
+// Creation is unauthenticated and uses a separate transport: it sends neither
+// demo.ApiToken nor credentials/cookies on an injected control HttpClient.
+// Show workspace.UsageNotice to the user before continuing.
+demo.ApiToken = workspace.ApiToken!; // Explicitly scope this separate client.
+
+var templates = await demo.GetDemoTemplatesAsync();
+var instance = await demo.CreateDemoSessionAsync(
+    workspace.Id, templates.First().Id, Guid.NewGuid().ToString("D"));
+var bindings = await demo.GetBindingsAsync(instance.Session.Id);
+// Choose a text key actually exposed by the selected design, not a color/source key.
+if (bindings.Any(binding => binding.Key == "headline"))
+    await demo.UpdateBindingAsync(instance.Session.Id, "headline", "Hello from the sample");
+var outputUrl = demo.BuildOutputUrl("https://cg.medialooks.com",
+    instance.Session.Id, background: "transparent");
+// Give outputUrl to the SDK HTML5 overlay. Never put ApiToken in the URL.
+await demo.SendTimelineCommandAsync(instance.Session.Id, "restart");
+
+// Renew periodically while this controller is running (normally 30 seconds).
+await demo.HeartbeatDemoWorkspaceAsync(workspace.Id);
+// On close, release control; existing read-only viewers can finish normally.
+await demo.ReleaseDemoWorkspaceAsync(workspace.Id);
+// EndDemoWorkspaceAsync instead explicitly revokes the entire scope and outputs.
+```
+
+Reuse a `launchId` only when retrying creation after a transport failure in the same launch. Likewise, reuse an `instanceKey` only when retrying the same template instantiation. A new launch/intentional instance needs a new UUID. Creation does not automatically change `ApiToken`; subsequent methods require the returned workspace token. Heartbeat responses update lease information and do not return the control token again.
+
+| Method | REST call | Purpose |
+| --- | --- | --- |
+| `StartDemoWorkspaceAsync` | `POST /api/demo/workspaces` | Creates an isolated scope without account authentication. |
+| `GetDemoTemplatesAsync` | `GET /api/demo/templates` | Lists the read-only demo catalog. |
+| `CreateDemoSessionAsync` | `POST /api/demo/workspaces/{id}/sessions` | Creates an independent instance and returns its bindings. |
+| `HeartbeatDemoWorkspaceAsync` | `POST .../{id}/heartbeat` | Renews the controller lease within the maximum lifetime. |
+| `ReleaseDemoWorkspaceAsync` | `POST .../{id}/release` | Releases control without immediately ending connected viewers. |
+| `EndDemoWorkspaceAsync` | `DELETE /api/demo/workspaces/{id}` | Explicitly ends the scope and its instances. |
+
+Ordinary `GetSessionsAsync`, binding updates and timeline commands work within the returned scope; account/session enumeration outside it is not allowed. Demo state expires after inactivity or the maximum lifetime and is lost when the service restarts. Do not rely on it for production playout. Server limits and expiry timestamps are authoritative. Availability is checked by creation itself, not by the generic health endpoint. A disabled demo feature returns an error; do not silently fall back to a shared privileged token.
+
+The server may retain aggregate demo-usage counters, separately from temporary scene data. Display the returned usage notice. Only an administrator can read these statistics; the demo token cannot access them. Never log control tokens, binding content, video filenames or complete output URLs as telemetry.
 
 ## API Token
 
@@ -214,9 +304,43 @@ The client sends the token as:
 * `Authorization: Bearer <token>`
 * `x-mlcg-token: <token>`
 
-## Error Handling
+## HTTP Ownership and Error Handling
 
-The wrapper uses `HttpResponseMessage.EnsureSuccessStatusCode()`. Failed REST calls throw `HttpRequestException`.
+In the updated source, every request captures its own authentication headers.
+The library does not modify a supplied `HttpClient.DefaultRequestHeaders` and
+does not dispose a caller-owned `HttpClient`; it disposes its requests and
+responses. A blank `ApiToken` suppresses inherited control-auth headers for that
+request. Use separate `MlcgRestClient` instances for different services/accounts
+rather than reconfiguring one client while operations are active.
+
+The default client does not follow redirects. When injecting an `HttpClient`,
+configure its handler with `AllowAutoRedirect = false`: the wrapper cannot
+change an existing handler's redirect or cookie policy. In particular, do not
+allow custom control-token headers to be forwarded to another host.
+
+HTTP failures in the updated client throw `MlcgRestException`, which still
+derives from `HttpRequestException`. `StatusCode` is nullable when no response
+was received; `RetryAfter` is a nullable delay, clamped to zero through 24 hours.
+No retry is automatic. Messages do not include server bodies, request URLs,
+capability keys or credentials. Caller cancellation remains cancellation.
+
+```csharp
+try
+{
+    await client.SetAnimationLoopAsync(sessionId, enabled: true);
+}
+catch (MlcgRestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+{
+    // Ask the user to reconnect; never log or replace their token implicitly.
+}
+catch (MlcgRestException ex) when ((int?)ex.StatusCode == 429)
+{
+    // Offer a retry after ex.RetryAfter. Do not silently replay on-air commands.
+}
+```
+
+The public 1.0.1 API exposes `HttpRequestException`; existing catch blocks remain
+compatible with the updated source.
 
 ```csharp
 try

@@ -1,5 +1,4 @@
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -19,20 +18,12 @@ public sealed partial class MlcgRestClient
     private sealed class PlayoutList<T> { public List<T> Items { get; set; } = new(); }
     private static string Segment(string id) => Uri.EscapeDataString(id);
 
-    private async Task<T> PlayoutRequestAsync<T>(string method, string path, object? body = null, long? revision = null, string? requestKey = null, CancellationToken cancellationToken = default)
+    private Task<T> PlayoutRequestAsync<T>(string method, string path, object? body = null, long? revision = null, string? requestKey = null, CancellationToken cancellationToken = default)
     {
         var token = ApiToken?.Trim();
         if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Set ApiToken before using scheduling endpoints.");
-        using var request = new HttpRequestMessage(new HttpMethod(method), BuildUri("/api/v1/" + path));
-        // Capture credentials on this request; do not mutate shared default headers.
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        if (revision.HasValue) request.Headers.TryAddWithoutValidation("If-Match", "\"" + revision.Value + "\"");
-        if (requestKey != null) request.Headers.TryAddWithoutValidation("Idempotency-Key", requestKey);
-        if (body != null) request.Content = new StringContent(JsonSerializer.Serialize(body, PlayoutJson), Encoding.UTF8, "application/json");
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
-        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        return JsonSerializer.Deserialize<T>(json, PlayoutJson) ?? throw new InvalidOperationException("No playout payload returned.");
+        return SendJsonAsync<T>(_httpClient, CreateRequest(new HttpMethod(method), "/api/v1/" + path,
+            token, body, PlayoutJson, revision, requestKey), PlayoutJson, cancellationToken);
     }
 
     public async Task<IReadOnlyList<MlcgShow>> GetShowsAsync(CancellationToken cancellationToken = default) => (await PlayoutRequestAsync<PlayoutList<MlcgShow>>("GET", "shows", cancellationToken: cancellationToken)).Items;

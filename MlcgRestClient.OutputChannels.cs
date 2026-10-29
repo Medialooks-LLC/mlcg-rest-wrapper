@@ -66,12 +66,11 @@ public sealed partial class MlcgRestClient
         ValidateOutputBroker();
         // A separate client deliberately cannot inherit Authorization or cookies
         // from an injected/shared control HttpClient's DefaultRequestHeaders.
-        using var outputClient = new HttpClient();
-        using var response = await outputClient.GetAsync(BuildUri("/api/v1/output/channels/" + Segment(channel.Id) + "?key=" + Segment(channel.OutputKey!)), cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException("Read-only output channel unavailable (" + (int)response.StatusCode + ").");
-        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        return JsonSerializer.Deserialize<MlcgOutputChannelSnapshot>(json, PlayoutJson) ?? throw new InvalidOperationException("No output channel payload returned.");
+        using var handler = new HttpClientHandler { UseCookies = false, UseDefaultCredentials = false, AllowAutoRedirect = false };
+        using var outputClient = new HttpClient(handler) { Timeout = _httpClient.Timeout };
+        return await SendJsonAsync<MlcgOutputChannelSnapshot>(outputClient, CreateRequest(HttpMethod.Get,
+            "/api/v1/output/channels/" + Segment(channel.Id) + "?key=" + Segment(channel.OutputKey!),
+            token: null, body: null, PlayoutJson, suppressInheritedAuth: false), PlayoutJson, cancellationToken).ConfigureAwait(false);
     }
 
     private static void ValidateChannelCapability(MlcgOutputChannel channel)
