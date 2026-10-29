@@ -7,7 +7,7 @@ MLCG is the MediaLooks HTML5 CG editor and live graphics service. Operators use 
 - Hosted service: https://cg.medialooks.com/
 - Documentation: https://docs.medialooks.com/mlcg
 
-Use this library from a desktop controller, automation tool, newsroom system, scoreboard integration, or any C# application that needs to read sessions and update live binding values.
+Use this library from a desktop controller, automation tool, newsroom system, scoreboard integration, or any C# application that needs to read sessions, update live binding values, build Show playout and deliver it through a permanent HTML output link.
 
 ## Install
 
@@ -21,7 +21,7 @@ dotnet add package MLCG.RestControl
 using MLCG.RestControl;
 
 using var client = new MlcgRestClient("https://cg.medialooks.com");
-client.ApiToken = "mlcg_your_rest_token"; // Optional when the hosted service requires account access.
+client.ApiToken = "mlcg_your_rest_token"; // Required for hosted session-control endpoints.
 ```
 
 For a local broker, use:
@@ -31,6 +31,8 @@ using var client = new MlcgRestClient("http://127.0.0.1:3101");
 ```
 
 ## Commands
+
+The `codex/show-timeline-playout` development branch adds typed Show/Timeline/Clip/Run/Schedule methods, live clip-data updates, atomic live-plan edits, JSON import/export and run WebSocket subscriptions. The updated source also includes permanent Output Channel methods. Build a wrapper containing this source to use them; the public 1.0.0 package does not contain them yet. See [the scheduling guide](../../docs/playout-scheduling.md) for the contract and examples. Existing session methods remain compatible.
 
 | Method | REST call | Purpose |
 | --- | --- | --- |
@@ -144,6 +146,64 @@ Console.WriteLine(outputUrl);
 ```
 
 `BuildOutputUrl` includes both `broker` and legacy `rest` query parameters so output pages can subscribe to live binding updates.
+
+## Permanent Output Channels
+
+Give the final user a permanent channel URL for their browser/HTML overlay. Unlike `BuildShowOutputUrl`, which belongs to one Run, this link follows whichever Run and output the operator explicitly assigns to the channel.
+
+```csharp
+using MLCG.RestControl;
+using MLCG.RestControl.Models;
+
+using var client = new MlcgRestClient("https://cg.medialooks.com");
+client.ApiToken = tokenFromYourApplication;
+
+var channel = await client.EnsureDefaultOutputChannelAsync();
+var url = client.BuildOutputChannelUrl("https://cg.medialooks.com", channel);
+// Share url privately with the final user, never ApiToken.
+
+var run = await client.StartShowOnChannelAsync(
+    showId, channel, Guid.NewGuid().ToString("N"), outputId: "program");
+
+// Reload before the next take: the previous assignment changed Revision.
+channel = await client.GetOutputChannelAsync(channel.Id);
+var nextRun = await client.StartShowOnChannelAsync(
+    nextShowId, channel, Guid.NewGuid().ToString("N"), outputId: "program");
+// The original url is unchanged.
+```
+
+`EnsureDefaultOutputChannelAsync` idempotently provisions the current account's Program destination without starting or routing a Run. `StartShowOnChannelAsync` atomically starts and assigns; a stale channel revision returns `412` and creates no Run. Reuse the same idempotency key for a transport retry with identical Show/start-mode/routing intent. Retrying returns that original Run without rerouting it if another Run has since taken the channel. A new intentional execution needs a new key; different intent with the old key returns `409`.
+
+| Wrapper method | REST contract |
+| --- | --- |
+| `GetOutputChannelsAsync`, `GetOutputChannelAsync` | `GET /api/v1/output-channels[/{id}]` (authenticated). Lists contain only the current account's channels. |
+| `EnsureDefaultOutputChannelAsync` | `POST /api/v1/output-channels` with `{ "name": "Program", "default": true }`. |
+| `CreateOutputChannelAsync` | `POST /api/v1/output-channels` with a name and optional output. Creates an independent destination. |
+| `RenameOutputChannelAsync` | `PATCH /api/v1/output-channels/{id}` with the channel's current revision. |
+| `AssignOutputChannelAsync`, `ClearOutputChannelAsync` | `PUT /api/v1/output-channels/{id}/assignment`, current revision. `runId: null` clears the channel without stopping its Run. |
+| `RotateOutputChannelKeyAsync`, `DeleteOutputChannelAsync` | Revoke old links via `POST .../{id}/rotate-key` or `DELETE .../{id}`, current revision. |
+| `StartShowOnChannelAsync` | `POST /api/v1/runs`, with routing intent, `outputChannelRevision` and `Idempotency-Key`. |
+| `ScheduleShowOnChannelAsync` | `POST /api/v1/schedules`, storing the destination/output with the pinned Show snapshot. |
+| `BuildOutputChannelUrl` | Builds `#/output/channel/{id}?key={outputKey}&broker={BaseUrl}`; no control token or editable output selector. |
+| `GetOutputChannelSnapshotAsync` | Read-only `GET /api/v1/output/channels/{id}?key=...`; uses only the capability, not control credentials/cookies. |
+| `SubscribeOutputChannelAsync` | Read-only `WS /ws/playout?channel={id}&key=...`. Reconnect explicitly after interruption. |
+
+The read-only snapshot endpoint is `GET /api/v1/output/channels/{id}?key=...`. Channel snapshots and `channel.clock` events are server-scoped to the assigned output; other outputs and the Run's broader output key are excluded. `channel.snapshot` can contain `Run = null` for an idle, transparent channel. Replace the retained Run/plan when assignment changes. A channel capability cannot control the Run or list normal account objects, but it does reveal its graphics/data, so keep the URL private. Renaming, clearing and reassignment keep it unchanged; key rotation or channel deletion revokes it, including open subscriptions.
+
+```csharp
+// These read-only calls use channel.OutputKey, not client.ApiToken.
+var snapshot = await client.GetOutputChannelSnapshotAsync(channel);
+Console.WriteLine(snapshot.Run?.Name ?? "Channel idle (transparent)");
+await client.SubscribeOutputChannelAsync(channel, message =>
+{
+    Console.WriteLine(message.Type); // channel.snapshot or channel.clock
+    return Task.CompletedTask;
+}, cancellationToken);
+```
+
+`ScheduleShowOnChannelAsync` checks the supplied revision at creation, then intentionally takes that channel when the scheduled Run starts. A later manual reassignment does not cancel the job. Cancel it explicitly with `CancelScheduleAsync`; a deleted/unavailable channel fails the scheduled start. Ordinary `StartShowAsync`/`ScheduleShowAsync` do not route channels. For remote sharing, neither frontend nor broker may point at `localhost` on the recipient's machine.
+
+See the [complete channel REST contract](../../docs/playout-scheduling.md#permanent-output-channels) and [C# integration examples](../../docs/csharp-rest-wrapper.md#permanent-output-channels). These source methods are not a claim about availability in an already-installed public NuGet release.
 
 ## API Token
 

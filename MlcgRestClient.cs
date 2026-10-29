@@ -6,7 +6,7 @@ using MLCG.RestControl.Models;
 
 namespace MLCG.RestControl;
 
-public sealed class MlcgRestClient : IDisposable
+public sealed partial class MlcgRestClient : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -239,6 +239,7 @@ public sealed class MlcgRestClient : IDisposable
         }
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound &&
+            requestUri.IndexOf("/api/sessions/", StringComparison.OrdinalIgnoreCase) >= 0 &&
             requestUri.IndexOf("/timeline", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             message += " | Timeline control requires an MLCG REST server build with POST /api/sessions/{id}/timeline and a valid selected session id.";

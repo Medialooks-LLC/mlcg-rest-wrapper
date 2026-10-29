@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "packageId": "MLCG.RestControl",
+  "version": "1.0.1",
+  "sourceCommit": "0754155d75b784332b86aa8159cbe27685aefbd0",
+  "snapshotSha256": "71538f5d26aa7612c0122b664a959b03572c2c299dd476c4f15dad6231830bb8",
+  "managedFiles": [
+    ".gitignore",
+    "LICENSE",
+    "MLCG.RestControl.csproj",
+    "MlcgRestClient.OutputChannels.cs",
+    "MlcgRestClient.Playout.cs",
+    "MlcgRestClient.cs",
+    "Models/MlcgBinding.cs",
+    "Models/MlcgElement.cs",
+    "Models/MlcgHealth.cs",
+    "Models/MlcgPoint.cs",
+    "Models/MlcgSessionSummary.cs",
+    "Models/MlcgSize.cs",
+    "Models/OutputChannelModels.cs",
+    "Models/PlayoutModels.cs",
+    "Models/RestEnvelopes.cs",
+    "README.md"
+  ]
+}
